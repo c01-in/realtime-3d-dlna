@@ -1,0 +1,36 @@
+services:
+  dlna:
+    build: .
+    network_mode: host
+    command:
+      - python
+      - serve.py
+      - --data-dir
+      - /data
+      - --media
+      - /media
+      - --port
+      - "${DLNA_PORT:-8200}"
+      - --name
+      - "${DLNA_NAME:-Realtime 3D DLNA}"
+    restart: unless-stopped
+    environment:
+      NVIDIA_DRIVER_CAPABILITIES: compute,video,utility
+      LIVE3D_LAN_IP: "${DLNA_LAN_IP:-}"
+    volumes:
+      - type: bind
+        source: "${MEDIA_DIR:?Set MEDIA_DIR in .env}"
+        target: /media
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${DATA_DIR:-./data}"
+        target: /data
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${GPU_DEVICE:-0}"]
+              capabilities: [gpu]

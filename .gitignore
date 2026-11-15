@@ -1,0 +1,11 @@
+.env
+.runtime/
+data/
+media/
+.venv/
+__pycache__/
+*.py[cod]
+*.log
+*.pth
+*.onnx
+*.ts

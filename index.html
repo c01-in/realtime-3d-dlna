@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Realtime 3D DLNA</title>
+<style>
+:root{color-scheme:dark;--base:#0d1117;--panel:#161b22;--line:#30363d;--text:#e6edf3;--muted:#9da7b3;--blue:#79c0ff;--green:#56d364}
+*{box-sizing:border-box}body{margin:0;background:var(--base);color:var(--text);font:14px/1.55 Geist,system-ui,sans-serif}
+header{background:var(--panel);border-bottom:1px solid var(--line)}.bar,main{width:min(100% - 32px,1000px);margin:auto}.bar{min-height:62px;display:flex;align-items:center;justify-content:space-between;gap:12px}
+strong{font-size:16px}.mono{font-family:"IBM Plex Mono",ui-monospace,Consolas,monospace}.muted{color:var(--muted)}.ready{color:var(--green)}
+main{padding:42px 0}h1{font-size:30px;letter-spacing:-.035em;margin:0 0 6px}.summary{display:flex;flex-wrap:wrap;gap:10px 26px;margin:14px 0 30px;font-size:13px}
+section{border:1px solid var(--line);border-radius:7px;overflow:hidden}nav{display:flex;flex-wrap:wrap;align-items:center;gap:7px;background:var(--panel);padding:12px 16px}
+ul{list-style:none;margin:0;padding:0}li{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 16px;border-top:1px solid var(--line);min-height:41px}
+li:hover{background:var(--panel)}button,a{color:var(--blue)}button{background:none;border:0;padding:0;font:inherit;text-align:left;cursor:pointer}button:hover{text-decoration:underline}
+.filename{display:flex;gap:9px;align-items:baseline;overflow-wrap:anywhere}.copy{flex-shrink:0}
+footer{margin-top:22px;text-align:right;font-size:13px}
+</style>
+<header><div class="bar"><strong class="mono">Realtime 3D DLNA</strong><span id="status" class="mono muted" role="status">Connecting…</span></div></header>
+<main>
+<h1 id="name">Media library</h1>
+<div class="summary mono muted"><span id="model"></span><span id="output"></span><span id="discovery"></span></div>
+<section aria-label="Media library"><nav id="path" aria-label="Current folder"></nav><ul id="entries" aria-live="polite"></ul></section>
+<footer><a href="https://github.com/c01-in/realtime-3d-dlna">Source on GitHub ↗</a></footer>
+</main>
+<script>
+const el = id => document.getElementById(id);
+function element(tag, text, css) {
+  const node = document.createElement(tag);
+  if (text) node.textContent = text;
+  if (css) node.className = css;
+  return node;
+}
+const crumbs = [{id: '0', title: 'Media library'}];
+let currentRequest = 0;
+function rowFor(entry) {
+  const row = element('li');
+  const title = element('div', '', 'filename');
+  title.append(element('span', entry.folder ? '[+]' : '[3D]', 'mono muted'));
+  row.append(title);
+  if (entry.folder) {
+    const button = element('button', entry.title);
+    button.onclick = () => { crumbs.push(entry); browse(crumbs.length - 1); };
+    title.append(button);
+  } else {
+    title.append(element('span', entry.title));
+    const copy = element('button', 'Copy URL', 'mono copy');
+    copy.onclick = async () => {
+      try {
+        if (!navigator.clipboard) throw new Error();
+        await navigator.clipboard.writeText(entry.url);
+        copy.textContent = 'Copied';
+      } catch {
+        window.prompt('Copy this playback URL', entry.url);
+      }
+    };
+    row.append(copy);
+  }
+  return row;
+}
+async function browse(index) {
+  const request = ++currentRequest;
+  crumbs.splice(index + 1);
+  el('path').replaceChildren();
+  crumbs.forEach((entry, position) => {
+    if (position) el('path').append(element('span', '/', 'muted'));
+    const button = element('button', entry.title, 'mono');
+    button.onclick = () => browse(position);
+    el('path').append(button);
+  });
+  el('entries').replaceChildren(element('li', 'Loading…', 'muted'));
+  try {
+    const response = await fetch('/api/library?folder=' + encodeURIComponent(crumbs[index].id));
+    if (!response.ok) throw new Error();
+    const entries = await response.json();
+    if (request !== currentRequest) return;
+    const rows = entries.length ? entries.map(rowFor) : [element('li', 'This folder has no supported videos.', 'muted')];
+    el('entries').replaceChildren(...rows);
+  } catch {
+    if (request === currentRequest) el('entries').replaceChildren(element('li', 'Unable to read this folder.', 'muted'));
+  }
+}
+fetch('/health').then(response => {
+  if (!response.ok) throw new Error();
+  return response.json();
+}).then(health => {
+  el('name').textContent = health.name;
+  el('status').textContent = '● Online';
+  el('status').classList.add('ready');
+  el('model').textContent = health.model;
+  el('output').textContent = health.output;
+  el('discovery').textContent = health.discovery ? 'DLNA discovery on' : 'DLNA discovery off';
+}).catch(() => { el('status').textContent = 'Offline'; });
+browse(0);
+</script>
