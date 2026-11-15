@@ -32,6 +32,8 @@ MediaPath 支持多个本地目录和当前账户可读的 UNC 路径。首次�
 
 电视选择 DLNA 服务 **Realtime 3D DLNA**，3D 模式选「上下」。本机可在 http://localhost:8200 打开状态和媒体列表。当前链路保留源帧率，HDR 会映射到 SDR。外挂字幕需要播放器支持。实际速度取决于片源、GPU 和同机负载。
 
+本机 RTX 5080 验收通过。Windows 后台任务从 NAS 连续输出 20 秒 HDR 片段，共解码 500 帧。GPU 空闲时耗时 18.04 秒，有其他 GPU 工作时耗时 25.43 秒。Docker Compose 在本机 Docker Desktop 的 Linux 网络中通过了 SSDP 发现、字幕和音视频解码。另取 4 秒 HDR 片段，3.53 秒内输出并解码了 100 帧。使用 Docker Desktop 时，还需在电视上确认跨出虚拟机的自动发现。
+
 ## 许可
 
 本项目使用 [AGPL-3.0-or-later](LICENSE)。oVDA c16 的代码和权重从海德堡大学及原作者的项目下载，继续使用其独立的 [NC-SA-UHDV1.0 非商业许可](https://huggingface.co/FriedFeid/oVDA/blob/main/LICENSE)。项目同样复用了 [Thru3D Media Server](https://github.com/zerochocobo/Thru3D-Media-Server) 的立体渲染与 DLNA 组件。

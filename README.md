@@ -58,6 +58,10 @@ Open the TV or player’s DLNA sources and select **Realtime 3D DLNA**. The pict
 
 Open http://localhost:8200 on the server for the dashboard. The health endpoint is /health. Use tests/verify.py with a video title to check discovery, browsing, HTTP byte ranges and actual decode. The script accepts repeated --directory for nested folders.
 
+### Local validation
+
+On an RTX 5080, the Windows scheduled service returned 500 decoded HEVC frames from a 20-second HDR NAS excerpt. The transfer took 18.04 seconds with no other substantial GPU workload and 25.43 seconds with competing GPU activity. Docker Compose on the same machine passed CUDA rendering, HEVC/AAC decode, sidecar subtitles and SSDP from within Docker Desktop's Linux network. A four-second HDR excerpt returned 100 frames in 3.53 seconds. Test SSDP from your TV when using Docker Desktop.
+
 ## License
 
 This project is [AGPL-3.0-or-later](LICENSE), including the service code derived from [Thru3D Media Server](https://github.com/zerochocobo/Thru3D-Media-Server). The setup fetches the oVDA c16 code and checkpoint from Heidelberg University and the original authors. Those assets retain their separate [NC-SA-UHDV1.0 terms](https://huggingface.co/FriedFeid/oVDA/blob/main/LICENSE) for non-commercial use, with commercial licensing available from the rights holder. See [the upstream oVDA project](https://github.com/FriedFeid/OnlineVideoDepthAnything) for attribution and model details.
