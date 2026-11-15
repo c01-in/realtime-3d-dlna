@@ -2,23 +2,29 @@
 
 # Realtime 3D DLNA
 
-**Play your 2D library in 3D on the TV.**
+**Real-time 2D-to-3D streaming for 3D projectors and 3D TVs.**
 
-On-demand oVDA c16 depth, GPU stereo rendering and a single 1080p top-and-bottom DLNA stream.
+A DLNA media server for home theater. Stream local or NAS movies in 1080p Top & Bottom (Half TAB) 3D with oVDA c16 and GPU stereo rendering.
 
 [![App license](https://img.shields.io/badge/app_license-AGPL--3.0--or--later-14B8A6?style=flat-square)](LICENSE)
 [![Output](https://img.shields.io/badge/output-1080p_Top%E2%80%93Bottom-58A6FF?style=flat-square)](#playback)
 
-[简体中文](README.zh-CN.md) · [Linux Compose](#linux-compose) · [Windows](#windows) · [Model license](#license)
+[简体中文](README.zh-CN.md) · [Use cases](#use-cases) · [Linux Compose](#linux-compose) · [Windows](#windows) · [Model license](#license)
 
 </div>
 
-Open the web dashboard to see the service status, walk the media folders and copy a playback URL. Your TV can also discover the service directly using DLNA. The server renders a video only while a client is requesting it, with byte ranges for seeking and DLNA sidecar subtitle metadata.
+Open the web dashboard to see the service status, walk the media folders and copy a playback URL. A compatible DLNA player can discover the server on the local network. The server renders a video only while a client is requesting it, with byte ranges for seeking and DLNA sidecar subtitle metadata.
+
+## Use cases
+
+- **3D projector home theater.** If your projector accepts Top & Bottom 3D over HDMI, connect a DLNA player or streaming box that can decode HEVC and output the full 1080p frame. Select Top & Bottom on the projector. Look for this mode and the supported HDMI timings in your projector's manual. [BenQ TK710STi manual](https://esupportdownload.benq.com/esupport/PROJECTOR%20FOR%20CONSUMER/UserManual/TK710STi/TK710STi_UM_EN_260223154105.pdf) · [Epson Home Cinema 4010 and Pro Cinema 4050 specifications](https://files.support.epson.com/docid/cpd5/cpd55708/source/product_info/concepts/projector_features_hc4010_pc4050.html)
+- **3D TV playback.** Browse the server in the TV's built-in DLNA player if it supports HEVC, or connect a compatible external player. Enable the TV's Top & Bottom mode to view the two eyes in 3D.
+- **Local and NAS movie libraries.** Browse your existing folders and pick a 2D movie to convert on demand. Run the GPU server in the background on Windows or with Docker Compose on Linux.
 
 ## Requirements
 
 - NVIDIA CUDA GPU and a driver compatible with the runtime. The FFmpeg encoder uses HEVC NVENC. NVDEC is used for supported inputs, with software decoding available when hardware decoding cannot start.
-- A local media directory or a NAS directory mounted or readable by the service account. The TV and server share a trusted LAN.
+- A local media directory or a NAS directory mounted or readable by the service account. The DLNA player and server share a trusted LAN.
 - Windows uses Python 3.12 and an FFmpeg build with zscale and NVENC. Linux uses Docker Engine, Compose and the NVIDIA Container Toolkit.
 
 Realtime speed depends on the source, GPU and competing GPU workloads. Use a real playback test with the target media before relying on a hardware configuration. The service exposes HTTP on TCP 8200 by default and discovers devices using SSDP on UDP 1900.
@@ -45,7 +51,7 @@ The assets command downloads the pinned upstream sources and validates the c16 c
 Install [Python 3.12](https://www.python.org/downloads/) and an [FFmpeg build](https://ffmpeg.org/download.html) with HEVC NVENC and zscale. Run the installer from the cloned repo. It creates a per-user Python environment, installs the runtime assets and registers a Task Scheduler task that runs as the signed-in user via pythonw.exe.
 
 ```powershell
-.windowsInstall.ps1 -MediaPath 'D:Videos' -DataDir 'D:Realtime3DDLNA' -AcceptOvdaNonCommercial
+.\windows\Install.ps1 -MediaPath 'D:\Videos' -DataDir 'D:\Realtime3DDLNA' -AcceptOvdaNonCommercial
 ```
 
 Pass multiple values to MediaPath to expose multiple folders, including UNC paths that the Windows account can read. Optional parameters include Port, LanIp and FfmpegDir. Run with LanFirewall from an elevated session if you want the installer to add inbound rules for a trusted Private network. Specify PythonExe plus ExtraPythonPath to reuse an existing compatible environment. The service logs to server.log under DataDir.
@@ -54,7 +60,7 @@ To stop the service, use Stop-ScheduledTask -TaskName 'Realtime 3D DLNA'. To uni
 
 ## Playback
 
-Open the TV or player’s DLNA sources and select **Realtime 3D DLNA**. The picture-mode setting on the TV is **Top and Bottom**. Video keeps the source frame rate and is streamed as 1920×1080 HEVC with AAC when the input has audio. HDR sources are tone-mapped to SDR. External subtitles depend on the player supporting DLNA sidecar captions.
+Open the player's DLNA sources and select **Realtime 3D DLNA**. On the projector or TV, select **Top & Bottom** (also called **Over-Under**). Video keeps the source frame rate and is streamed as 1920×1080 HEVC with AAC when the input has audio. HDR sources are tone-mapped to SDR. External subtitles depend on the player supporting DLNA sidecar captions.
 
 Open http://localhost:8200 on the server for the dashboard. The health endpoint is /health. Use tests/verify.py with a video title to check discovery, browsing, HTTP byte ranges and actual decode. The script accepts repeated --directory for nested folders.
 
