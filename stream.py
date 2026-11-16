@@ -21,23 +21,22 @@ recent_lock = threading.Lock()
 render_locks = tuple(threading.Lock() for _ in range(64))
 
 
+def size_for(frames, fps):
+    return round(Fraction(SLOT_RATE * frames, 8 * PACKET_SIZE) / fps) * PACKET_SIZE
+
+
 class SeekableVideo:
-    def __init__(self, source, video, revision, engine):
+    def __init__(self, source, video, revision, worker):
         self.source = source
         self.video = video
         self.revision = revision
-        self.engine = engine
-        self.predict = None
-        self.next_frame = None
-        _, _, _, self.fps, _, duration, _ = video
-        self.frames = max(1, round(duration * self.fps))
-        self.slot_frames = max(1, round(4 * self.fps))
-        self.slot_size = self.size_for(self.slot_frames)
-        complete, last = divmod(self.frames, self.slot_frames)
-        self.size = complete * self.slot_size + self.size_for(last)
-
-    def size_for(self, frames):
-        return round(Fraction(SLOT_RATE * frames, 8 * PACKET_SIZE) / self.fps) * PACKET_SIZE
+        self.worker = worker
+        self.connection = None
+        _, _, _, fps, _, duration, _ = video
+        slot_frames = max(1, round(4 * fps))
+        self.slot_size = size_for(slot_frames, fps)
+        complete, last = divmod(max(1, round(duration * fps)), slot_frames)
+        self.size = complete * self.slot_size + size_for(last, fps)
 
     def render(self, slot, cancelled):
         key = self.source, self.revision, slot
@@ -45,21 +44,69 @@ class SeekableVideo:
         while not cancelled.is_set():
             if lock.acquire(timeout=0.1):
                 try:
-                    return self.render_segment(key, slot, cancelled)
+                    return self.cached_segment(key, slot, cancelled)
                 finally:
                     lock.release()
         return b''
 
-    def render_segment(self, key, slot, cancelled):
+    def cached_segment(self, key, slot, cancelled):
         with recent_lock:
             if key in recent:
                 recent.move_to_end(key)
                 return recent[key]
-        if cancelled.is_set():
+        if not cancelled.is_set():
+            segment = self.render_segment(slot, cancelled)
+            if segment and not cancelled.is_set():
+                with recent_lock:
+                    recent[key] = segment
+                    recent.move_to_end(key)
+                    if len(recent) > 3:
+                        recent.popitem(last=False)
+                return segment
+        return b''
+
+    def render_segment(self, slot, cancelled):
+        try:
+            if self.connection is None:
+                self.connection = self.worker.connect()
+                self.connection.send((self.source, self.video))
+            if cancelled.is_set():
+                return b''
+            self.connection.send(slot)
+            while not self.connection.poll(0.1):
+                if cancelled.is_set():
+                    self.connection.send(None)
+                    break
+            data = self.connection.recv_bytes()
+        except EOFError as exc:
+            raise RuntimeError('GPU worker disconnected') from exc
+        if data.startswith(b'\0'):
+            raise RuntimeError(data[1:].decode('utf-8'))
+        return data
+
+    def close(self):
+        if self.connection is not None:
+            self.connection.close()
+
+
+class SegmentRenderer:
+    def __init__(self, source, video, engine):
+        self.source = source
+        self.video = video
+        self.engine = engine
+        self.predict = None
+        self.next_frame = None
+        fps, duration = video[3], video[5]
+        self.frames = max(1, round(duration * fps))
+        self.slot_frames = max(1, round(4 * fps))
+        self.fps = fps
+
+    def render(self, slot, is_cancelled):
+        if is_cancelled():
             return b''
         start = slot * self.slot_frames
         frames = min(self.slot_frames, self.frames - start)
-        capacity = self.size_for(frames)
+        capacity = size_for(frames, self.fps)
         lead_in = 0
         if self.next_frame != start:
             _, width, height, *_ = self.video
@@ -67,29 +114,20 @@ class SeekableVideo:
             lead_in = min(start, self.engine.history)
         self.next_frame = None
         stream = TopBottomStream(self.source, start, self.video, frames, self.predict, lead_in)
-        if cancelled.is_set():
-            stream.close()
-            return b''
         try:
             data = bytearray()
-            while not cancelled.is_set() and (chunk := stream.read()):
+            while not is_cancelled() and (chunk := stream.read()):
                 data.extend(chunk)
                 if len(data) > capacity:
                     raise RuntimeError(f'Encoded TS segment exceeded its byte budget ({len(data)} > {capacity})')
-            if cancelled.is_set():
+            if is_cancelled():
                 return b''
             if stream.error or stream.encode.wait(timeout=4) or not data or len(data) % PACKET_SIZE:
                 raise RuntimeError('Failed to produce a complete MPEG-TS segment') from stream.error
             if stream.frames == frames:
                 self.next_frame = start + frames
             data.extend(NULL_PACKET * ((capacity - len(data)) // PACKET_SIZE))
-            segment = bytes(data)
-            with recent_lock:
-                recent[key] = segment
-                recent.move_to_end(key)
-                if len(recent) > 3:
-                    recent.popitem(last=False)
-            return segment
+            return bytes(data)
         finally:
             stream.close()
 
@@ -106,7 +144,7 @@ def byte_range(value, total):
     return (start, end) if start <= end else None
 
 
-async def seekable_response(request, asset):
+def make_response(request, asset, resources):
     range_header = request.headers.get('range')
     headers = {'Accept-Ranges': 'bytes', 'contentFeatures.dlna.org': CONTENT_FEATURES,
                'transferMode.dlna.org': 'Streaming'}
@@ -123,43 +161,60 @@ async def seekable_response(request, asset):
     if request.method == 'HEAD':
         return Response(status_code=status, headers=headers, media_type=MIME)
 
-    first, offset = divmod(start, asset.slot_size)
-    last = end // asset.slot_size
-    cancelled = threading.Event()
+    return PlaybackResponse(request, asset, resources, start, end, status_code=status,
+                            headers=headers, media_type=MIME)
 
-    def render(slot):
-        return asset.render(slot, cancelled)
 
-    task = asyncio.create_task(asyncio.to_thread(render, first))
-    try:
-        while not task.done():
-            await asyncio.wait({task}, timeout=0.25)
-            if await request.is_disconnected():
-                raise HTTPException(499, 'Player disconnected')
-        initial = task.result()
-    except (OSError, RuntimeError, ValueError) as exc:
-        cancelled.set()
-        log.exception('Could not produce top-bottom segment for %s', asset.source.name)
-        raise HTTPException(502, '3D conversion could not produce the requested bytes') from exc
-    except BaseException:
-        cancelled.set()
-        raise
+class PlaybackResponse(StreamingResponse):
+    def __init__(self, request, asset, resources, start, end, **kwargs):
+        self.request = request
+        self.asset = asset
+        self.resources = resources
+        self.first, self.offset = divmod(start, asset.slot_size)
+        self.last, self.end_offset = divmod(end, asset.slot_size)
+        self.cancelled = threading.Event()
+        self.pending = None
+        super().__init__(self.chunks(), **kwargs)
 
-    async def chunks():
-        pending = None
+    def queue(self, slot):
+        self.pending = asyncio.create_task(asyncio.to_thread(self.asset.render, slot, self.cancelled))
+
+    async def __call__(self, scope, receive, send):
+        self.resources.begin()
         try:
-            for slot in range(first, last + 1):
-                if await request.is_disconnected():
-                    break
-                data = initial if slot == first else await pending
-                pending = asyncio.create_task(asyncio.to_thread(render, slot + 1)) if slot < last else None
-                begin = offset if slot == first else 0
-                stop = end - slot * asset.slot_size + 1 if slot == last else len(data)
-                for cursor in range(begin, stop, 65536):
-                    yield bytes(data[cursor:min(cursor + 65536, stop)])
+            self.queue(self.first)
+            try:
+                while not self.pending.done():
+                    await asyncio.wait({self.pending}, timeout=0.25)
+                    if await self.request.is_disconnected():
+                        raise HTTPException(499, 'Player disconnected')
+                self.pending.result()
+            except (OSError, RuntimeError, ValueError) as exc:
+                log.exception('Could not produce top-bottom segment for %s', self.asset.source.name)
+                raise HTTPException(502, '3D conversion could not produce the requested bytes') from exc
+            await super().__call__(scope, receive, send)
         finally:
-            cancelled.set()
-            if pending is not None:
-                await asyncio.gather(pending, return_exceptions=True)
+            self.cancelled.set()
+            # Keep the request active until any prefetched conversion has stopped.
+            if self.pending is not None and not self.pending.done():
+                self.pending.add_done_callback(self.release)
+            else:
+                self.release(self.pending)
 
-    return StreamingResponse(chunks(), status_code=status, headers=headers, media_type=MIME)
+    def release(self, task):
+        if task is not None and not task.cancelled():
+            task.exception()
+        try:
+            self.asset.close()
+        finally:
+            self.resources.end()
+
+    async def chunks(self):
+        for slot in range(self.first, self.last + 1):
+            data = await asyncio.shield(self.pending)
+            if slot < self.last:
+                self.queue(slot + 1)
+            begin = self.offset if slot == self.first else 0
+            stop = self.end_offset + 1 if slot == self.last else len(data)
+            for cursor in range(begin, stop, 65536):
+                yield data[cursor:min(cursor + 65536, stop)]

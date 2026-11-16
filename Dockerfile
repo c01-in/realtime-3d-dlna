@@ -6,5 +6,5 @@ COPY requirements.txt .
 RUN python -m pip install --index-url https://download.pytorch.org/whl/cu128 torch==2.8.0 \
  && python -m pip install -r requirements.txt
 FROM runtime AS app
-COPY serve.py assets.py ovda.py video.py stream.py library.py index.html /app/
+COPY serve.py assets.py ovda.py video.py stream.py library.py worker.py index.html /app/
 CMD ["python", "serve.py", "--data-dir", "/data", "--media", "/media"]

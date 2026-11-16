@@ -10,9 +10,6 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from fractions import Fraction
 
-import numpy as np
-from offline.two_dvr_gpu import GpuStereoRenderer
-from offline.two_dvr_render import DEFAULT_FLAT_FOV_DEG, effective_eye_distance_mm
 from utils.subprocess_hidden import hidden_subprocess_kwargs
 
 STEREO_STRENGTH = 0.5
@@ -78,6 +75,7 @@ class TopBottomStream:
         self.depth_seconds = 0.0
         self.render_seconds = 0.0
         self.stop = threading.Event()
+        self.decode_lock = threading.Lock()
         self.error = None
         seek = ['-ss', f'{float(start):.9f}'] if start else []
         decode_seek = ['-ss', f'{float(decode_start):.9f}'] if decode_start else []
@@ -145,11 +143,14 @@ class TopBottomStream:
                 self.decode_seconds += time.perf_counter() - started
                 if not raw:
                     result = self.decode.wait()
-                    if result and self.cuda_format and not decoded and not self.stop.is_set():
-                        log.warning('NVDEC could not start for this segment, retrying in software')
-                        self.decode.stdout.close()
-                        self.cuda_format = None
-                        self.decode = self.start_decode(None)
+                    if result and self.cuda_format and not decoded:
+                        with self.decode_lock:
+                            if self.stop.is_set():
+                                return None
+                            log.warning('NVDEC could not start for this segment, retrying in software')
+                            self.decode.stdout.close()
+                            self.cuda_format = None
+                            self.decode = self.start_decode(None)
                         continue
                     if result:
                         raise RuntimeError('FFmpeg could not decode the source')
@@ -166,6 +167,10 @@ class TopBottomStream:
             return None
 
         try:
+            import numpy as np
+            from offline.two_dvr_gpu import GpuStereoRenderer
+            from offline.two_dvr_render import DEFAULT_FLAT_FOV_DEG, effective_eye_distance_mm
+
             renderer = GpuStereoRenderer(
                 self.width, self.height, 'flat3d', effective_eye_distance_mm(65, STEREO_STRENGTH),
                 HOLE_FILL, DEFAULT_FLAT_FOV_DEG
@@ -196,16 +201,18 @@ class TopBottomStream:
         return self.encode.stdout.read1(65536)
 
     def close(self):
-        self.stop.set()
-        for process in (self.decode, self.encode):
+        with self.decode_lock:
+            self.stop.set()
+            decode = self.decode
+        for process in (decode, self.encode):
             if process.poll() is None:
                 try:
                     process.kill()
                 except ProcessLookupError:
                     pass
             process.wait()
-        self.worker.join(timeout=3)
-        self.decode.stdout.close()
+        self.worker.join()
+        decode.stdout.close()
         self.encode.stdout.close()
         log.info('Top-bottom segment closed, %d frames in %.2fs, decode=%s', self.frames,
                  time.perf_counter() - self.started, 'NVDEC' if self.cuda_format else 'CPU')

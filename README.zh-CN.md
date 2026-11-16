@@ -2,7 +2,7 @@
 
 **给 3D 投影仪和 3D 电视用的实时 2D 转 3D DLNA 媒体服务器。** 从本地目录或 NAS 点播电影，服务使用 oVDA c16 和 GPU 实时生成双眼画面，输出一路 1920×1080 上下 3D（Top & Bottom / Half TAB）。网页可以查看服务状态、浏览媒体和复制串流地址。
 
-[English](README.md) · [适用场景](#适用场景) · [Linux Compose](#linux-compose) · [Windows 后台安装](#windows-后台安装)
+[English](README.md) · [适用场景](#适用场景) · [Linux Compose](#linux-compose) · [Windows 后台安装](#windows-后台安装) · [GPU 资源模式](#gpu-资源模式)
 
 ## 适用场景
 
@@ -41,6 +41,15 @@ MediaPath 支持多个本地目录和当前账户可读的 UNC 路径。首次�
 在播放器里选择 DLNA 服务 **Realtime 3D DLNA**，在投影仪或电视上把 3D 模式选为「上下」。本机可在 http://localhost:8200 打开状态和媒体列表。当前链路保留源帧率，HDR 会映射到 SDR。外挂字幕需要播放器支持。实际速度取决于片源、GPU 和同机负载。
 
 本机 RTX 5080 验收通过。Windows 后台任务从 NAS 连续输出 20 秒 HDR 片段，共解码 500 帧。GPU 空闲时耗时 18.04 秒，有其他 GPU 工作时耗时 25.43 秒。Docker Compose 在本机 Docker Desktop 的 Linux 网络中通过了 SSDP 发现、字幕和音视频解码。另取 4 秒 HDR 片段，3.53 秒内输出并解码了 100 帧。使用 Docker Desktop 时，还需在电视上确认跨出虚拟机的自动发现。
+
+## GPU 资源模式
+
+- **keep-warm（默认）。** 服务启动时加载 oVDA，预热深度推理和立体渲染。服务运行期间，转换进程和模型占用的内存、显存持续保留。
+- **release-idle。** 播放首次需要实时转换时才加载模型。最后一个播放请求完成或断开后，连续空闲 30 分钟即退出转换进程，释放模型内存和显存。空闲时仍可通过 DLNA 发现服务和浏览片库。释放后的首次转换需要等待模型加载。
+
+Linux Compose 在 `.env` 中设置 `DLNA_RESOURCE_MODE=release-idle`，再运行 `docker compose up -d`。Windows 安装时加入 `-ResourceMode release-idle`。已经安装的服务可以在 `DataDir` 下的 `settings.json` 中设置 `"resource_mode": "release-idle"`，然后重启计划任务。将值改回 `keep-warm` 即恢复默认。直接运行 `serve.py` 时，可用 `--resource-mode` 选择模式。
+
+`/health` 可查看当前资源模式、转换进程状态与活跃播放请求数。
 
 ## 许可
 

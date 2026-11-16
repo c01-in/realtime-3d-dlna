@@ -11,6 +11,7 @@ param(
     [string]$LanIp,
     [string]$Name = 'Realtime 3D DLNA',
     [string]$TaskName = 'Realtime 3D DLNA',
+    [ValidateSet('keep-warm','release-idle')][string]$ResourceMode = 'keep-warm',
     [switch]$AcceptOvdaNonCommercial,
     [switch]$LanFirewall
 )
@@ -77,7 +78,7 @@ if ($Current -and $Current.State -eq 'Running') { Stop-ScheduledTask -TaskName $
 @{
     data_dir = $DataDir; model_dir = $ModelDir; media = $MediaPath; port = $Port
     name = $Name; lan_ip = $LanIp; ffmpeg_dir = $FfmpegDir; cuda_headers = $CudaHeaders
-    python_path = $ExtraPythonPath
+    python_path = $ExtraPythonPath; resource_mode = $ResourceMode.ToLowerInvariant()
 } | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $ConfigPath -Encoding UTF8
 if ($LanFirewall) {
     $HttpRule = "Realtime3DDLNA-HTTP-$Port"
@@ -102,7 +103,8 @@ $Deadline = (Get-Date).AddSeconds(90)
 while ((Get-Date) -lt $Deadline) {
     try {
         $Ready = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/health" -TimeoutSec 2
-        if ($Ready.status -eq 'ready' -and $Ready.name -eq $Name -and $Ready.model -eq 'oVDA c16') {
+        if ($Ready.status -eq 'ready' -and $Ready.name -eq $Name -and $Ready.model -eq 'oVDA c16' -and
+            $Ready.conversion.resource_mode -eq $ResourceMode) {
             Write-Host "Ready at http://localhost:$Port/ · log: $(Join-Path $DataDir 'server.log')"
             exit 0
         }

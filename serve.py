@@ -12,6 +12,8 @@ from pathlib import Path
 import shutil
 import sys
 
+from worker import GpuWorker, PlaybackResources, RESOURCE_MODES
+
 HERE = Path(__file__).resolve().parent
 
 
@@ -26,8 +28,11 @@ def arguments():
     parser.add_argument("--lan-ip", default=os.getenv("LIVE3D_LAN_IP", ""))
     parser.add_argument("--ffmpeg-dir", type=Path)
     parser.add_argument("--cuda-headers", type=Path)
+    parser.add_argument("--resource-mode", choices=RESOURCE_MODES,
+                        help="Keep the GPU worker warm (default) or release it after 30 idle minutes")
     parser.add_argument("--no-ssdp", action="store_true")
     args = parser.parse_args()
+    settings = {}
     if args.config:
         settings = json.loads(args.config.read_text(encoding="utf-8-sig"))
         for key in ("data_dir", "model_dir", "ffmpeg_dir", "cuda_headers"):
@@ -38,6 +43,10 @@ def arguments():
                 setattr(args, key, settings[key])
         args.media = [Path(path) for path in settings["media"]]
         sys.path[:0] = settings.get("python_path", [])
+    if args.resource_mode is None:
+        args.resource_mode = settings.get("resource_mode", os.getenv("DLNA_RESOURCE_MODE") or "keep-warm")
+    if args.resource_mode not in RESOURCE_MODES:
+        parser.error("Resource mode must be keep-warm or release-idle")
     if not args.media:
         parser.error("Set at least one --media directory")
     if not 1 <= args.port <= 65535:
@@ -85,13 +94,6 @@ def run():
     elif not os.getenv("CUDA_PATH"):
         import nvidia.cuda_runtime
         os.environ["CUDA_PATH"] = str(Path(next(iter(nvidia.cuda_runtime.__path__))))
-    dll_directory = None
-    if os.name == "nt":
-        import torch
-        torch_lib = Path(torch.__file__).parent / "lib"
-        dll_directory = os.add_dll_directory(str(torch_lib))
-        os.environ["PATH"] = os.pathsep.join((str(torch_lib), os.environ["PATH"]))
-
     import config
     from media_library import MediaLibrary, build_media_roots
     config.MEDIA_LIBRARY = MediaLibrary(build_media_roots(roots))
@@ -103,31 +105,30 @@ def run():
     from fastapi import FastAPI, HTTPException, Request
     from fastapi.responses import FileResponse, Response
     from library import Library, VIDEO_EXTENSIONS, directory_response
-    from ovda import OvdaEngine
-    from stream import SeekableVideo, seekable_response
+    from stream import SeekableVideo, make_response
     from utils.subtitles import find_external_subtitles, subtitle_response_mime
-    from video import GpuStereoRenderer, HOLE_FILL, STEREO_STRENGTH, DEFAULT_FLAT_FOV_DEG, effective_eye_distance_mm, probe
+    from video import probe
 
-    engine = OvdaEngine(ovda, checkpoint)
-    import numpy as np
-    starter = np.full((800, 1920, 3), 64, dtype=np.uint8)
-    starter_depth = engine.sequence(1920, 800)(starter)
-    if not np.isfinite(starter_depth).all():
-        raise RuntimeError("oVDA startup inference returned non-finite depth")
-    GpuStereoRenderer(1920, 800, "flat3d", effective_eye_distance_mm(65, STEREO_STRENGTH),
-                      HOLE_FILL, DEFAULT_FLAT_FOV_DEG).render(starter, starter_depth)
+    prewarm = args.resource_mode == "keep-warm"
+    worker = GpuWorker(ovda, checkpoint, data / "server.log", prewarm=prewarm)
+    resources = PlaybackResources(worker, args.resource_mode)
     library = Library(roots, f"http://{config.LAN_IP}:{args.port}")
 
     @asynccontextmanager
     async def lifespan(_app):
         ssdp = None if args.no_ssdp else SSDPServer()
-        if ssdp:
-            ssdp.start()
         try:
+            if prewarm:
+                await asyncio.to_thread(worker.start)
+            if ssdp:
+                ssdp.start()
             yield
         finally:
-            if ssdp:
-                ssdp.stop()
+            try:
+                if ssdp:
+                    ssdp.stop()
+            finally:
+                resources.close()
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     xml = "text/xml; charset=utf-8"
@@ -142,7 +143,7 @@ def run():
     @app.get("/health")
     def health():
         return {"status": "ready", "name": args.name, "model": "oVDA c16", "output": "1920×1080 · 上下 3D",
-                "gpu": str(engine.device), "discovery": not args.no_ssdp}
+                "gpu": "cuda:0", "discovery": not args.no_ssdp, "conversion": resources.status()}
 
     @app.get("/api/library")
     def list_media(folder: str = "0"):
@@ -186,7 +187,7 @@ def run():
         source = source_for(token, legacy)
         stat = source.stat()
         revision = stat.st_mtime_ns, stat.st_size
-        return SeekableVideo(source, probe(source, revision), revision, engine)
+        return SeekableVideo(source, probe(source, revision), revision, worker)
 
     @app.api_route("/nas-live/{token}/{filename}", methods=["GET", "HEAD"])
     @app.api_route("/media/{token}/{filename}", methods=["GET", "HEAD"])
@@ -195,14 +196,10 @@ def run():
             asset = await asyncio.to_thread(asset_for, token, request.url.path.startswith("/nas-live/"))
         except (OSError, ValueError, KeyError) as exc:
             raise HTTPException(422, "Unable to read video stream") from exc
-        return await seekable_response(request, asset)
+        return make_response(request, asset, resources)
 
-    logging.info("Serving %s on %s with oVDA c16", args.name, library.address)
-    try:
-        uvicorn.run(app, host="0.0.0.0", port=args.port, access_log=False, timeout_graceful_shutdown=4)
-    finally:
-        if dll_directory:
-            dll_directory.close()
+    logging.info("Starting %s on %s with oVDA c16 (%s)", args.name, library.address, args.resource_mode)
+    uvicorn.run(app, host="0.0.0.0", port=args.port, access_log=False, timeout_graceful_shutdown=4)
 
 
 if __name__ == "__main__":

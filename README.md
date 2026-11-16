@@ -9,7 +9,7 @@ A DLNA media server for home theater. Stream local or NAS movies in 1080p Top & 
 [![App license](https://img.shields.io/badge/app_license-AGPL--3.0--or--later-14B8A6?style=flat-square)](LICENSE)
 [![Output](https://img.shields.io/badge/output-1080p_Top%E2%80%93Bottom-58A6FF?style=flat-square)](#playback)
 
-[简体中文](README.zh-CN.md) · [Use cases](#use-cases) · [Linux Compose](#linux-compose) · [Windows](#windows) · [Model license](#license)
+[简体中文](README.zh-CN.md) · [Use cases](#use-cases) · [Linux Compose](#linux-compose) · [Windows](#windows) · [GPU resource mode](#gpu-resource-mode) · [Model license](#license)
 
 </div>
 
@@ -67,6 +67,15 @@ Open http://localhost:8200 on the server for the dashboard. The health endpoint 
 ### Local validation
 
 On an RTX 5080, the Windows scheduled service returned 500 decoded HEVC frames from a 20-second HDR NAS excerpt. The transfer took 18.04 seconds with no other substantial GPU workload and 25.43 seconds with competing GPU activity. Docker Compose on the same machine passed CUDA rendering, HEVC/AAC decode, sidecar subtitles and SSDP from within Docker Desktop's Linux network. A four-second HDR excerpt returned 100 frames in 3.53 seconds. Test SSDP from your TV when using Docker Desktop.
+
+## GPU resource mode
+
+- **keep-warm (default).** Load oVDA and run a depth and stereo warm-up at startup. Keep the GPU worker, model RAM and VRAM resident while the service runs.
+- **release-idle.** Start the GPU worker when playback first needs to generate a segment. The worker exits after 30 minutes of continuous inactivity after the final playback request completes or disconnects, freeing the model's RAM and VRAM. DLNA discovery and browsing stay available. The first conversion after release takes longer.
+
+For Linux Compose, set `DLNA_RESOURCE_MODE=release-idle` in `.env` and run `docker compose up -d`. For Windows, pass `-ResourceMode release-idle` to the installer, or set `"resource_mode": "release-idle"` in the existing `settings.json` under `DataDir` and restart the scheduled task. Use `keep-warm` in those settings to restore the default. When running `serve.py` directly, use `--resource-mode` to select either mode.
+
+The `/health` endpoint reports the selected resource mode, worker state and active playback request count.
 
 ## License
 

@@ -17,6 +17,7 @@ services:
     environment:
       NVIDIA_DRIVER_CAPABILITIES: compute,video,utility
       LIVE3D_LAN_IP: "${DLNA_LAN_IP:-}"
+      DLNA_RESOURCE_MODE: "${DLNA_RESOURCE_MODE:-keep-warm}"
     volumes:
       - type: bind
         source: "${MEDIA_DIR:?Set MEDIA_DIR in .env}"
